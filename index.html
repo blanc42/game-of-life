@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Conway's Game of Life - Infinite Draggable Grid</title>
+    <style>
+        body {
+            background-color: black;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            color: #39FF14;
+            font-family: Arial, sans-serif;
+        }
+        #canvasContainer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            bottom: 20px;
+            border: 2px solid #39FF14;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #controls {
+            position: fixed;
+            bottom: 40px;
+            right: 60px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #39FF14;
+            color: black;
+            border: none;
+            cursor: pointer;
+            margin: 0 5px;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+        .slider-container label {
+            margin-right: 10px;
+        }
+        input[type="range"] {
+            width: 200px;
+            background: #39FF14;
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .2s;
+        }
+        input[type="range"]:hover {
+            opacity: 1;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #000000;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #000000;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+        #iterationCount {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            font-size: 18px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvasContainer">
+        <canvas id="gameCanvas"></canvas>
+    </div>
+    <div id="iterationCount">Iterations: 0</div>
+    <div id="controls">
+        <div class="slider-container">
+            <label for="cellSizeSlider">Cell Size:</label>
+            <input type="range" id="cellSizeSlider" min="5" max="50" value="20">
+            <span id="cellSizeValue">20</span>
+        </div>
+        <div class="slider-container">
+            <label for="speedSlider">Speed:</label>
+            <input type="range" id="speedSlider" min="1" max="60" value="30">
+            <span id="speedValue">30 fps</span>
+        </div>
+        <div>
+            <button id="startStopButton">Start</button>
+            <button id="resetButton">Reset</button>
+            <button id="randomButton">Random</button>
+            <button id="stepButton">Step</button>
+        </div>
+    </div>
+    <script src="wasm_exec.js"></script>
+    <script>
+        const go = new Go();
+        WebAssembly.instantiateStreaming(fetch("main.wasm"), go.importObject).then((result) => {
+            go.run(result.instance);
+            const canvas = document.getElementById("gameCanvas");
+            const ctx = canvas.getContext("2d");
+            const startStopButton = document.getElementById("startStopButton");
+            const resetButton = document.getElementById("resetButton");
+            const randomButton = document.getElementById("randomButton");
+            const stepButton = document.getElementById("stepButton");
+            const cellSizeSlider = document.getElementById("cellSizeSlider");
+            const cellSizeValue = document.getElementById("cellSizeValue");
+            const speedSlider = document.getElementById("speedSlider");
+            const speedValue = document.getElementById("speedValue");
+            const iterationCountElement = document.getElementById("iterationCount");
+            let animationId;
+            let isRunning = false;
+            let grid = new Map();
+            let cellSize = 20;
+            let speed = 30;
+            let offsetX = 0;
+            let offsetY = 0;
+            let isDragging = false;
+            let lastX, lastY;
+            let iterationCount = 0;
+            let isSelecting = false;
+
+            function resizeCanvas() {
+                const container = document.getElementById("canvasContainer");
+                canvas.width = container.clientWidth;
+                canvas.height = container.clientHeight;
+                drawGrid();
+            }
+
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+
+            function initGrid() {
+                grid.clear();
+                const centerX = Math.floor(canvas.width / (2 * cellSize));
+                const centerY = Math.floor(canvas.height / (2 * cellSize));
+                const patterns = [
+                    [[-1, 0], [0, 0], [1, 0]], // Blinker
+                    [[0, 0], [1, 0], [0, 1], [1, 1]], // Block
+                    [[0, 0], [1, 0], [2, 0], [2, 1], [1, 2]], // Glider
+                    [[0, 0], [0, 1], [0, 2], [1, 2], [2, 1]], // Lightweight spaceship
+                    [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]], // Pentadecathlon (part 1)
+                    [[0, 0], [0, 1], [1, 0], [1, 1], [2, 2], [2, 3], [3, 2], [3, 3]], // Pulsar (part 1)
+                    [[0, 0], [1, 0], [2, 0], [0, 1], [0, 2], [1, 2], [2, 2], [3, 2], [4, 1], [4, 2]], // R-pentomino
+                    [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], [0, 2], [1, 2], [2, 2]] // Gosper glider gun (part 1)
+                ];
+                const pattern = patterns[Math.floor(Math.random() * patterns.length)];
+                pattern.forEach(([x, y]) => {
+                    grid.set(`${centerX + x},${centerY + y}`, true);
+                });
+                console.log("Grid initialized:", grid);
+                offsetX = 0;
+                offsetY = 0;
+                iterationCount = 0;
+                updateIterationCount();
+                drawGrid();
+            }
+
+            function drawGrid() {
+                ctx.fillStyle = "black";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.strokeStyle = "rgba(74, 255, 42, 0.3)";
+                
+                const startX = Math.floor(-offsetX / cellSize);
+                const startY = Math.floor(-offsetY / cellSize);
+                const endX = startX + Math.ceil(canvas.width / cellSize);
+                const endY = startY + Math.ceil(canvas.height / cellSize);
+
+                for (let y = startY; y <= endY; y++) {
+                    for (let x = startX; x <= endX; x++) {
+                        const screenX = Math.floor(x * cellSize + offsetX);
+                        const screenY = Math.floor(y * cellSize + offsetY);
+                        ctx.strokeRect(screenX, screenY, cellSize, cellSize);
+                        if (grid.get(`${x},${y}`)) {
+                            ctx.fillStyle = "#39FF14";
+                            ctx.fillRect(screenX + 1, screenY + 1, cellSize - 2, cellSize - 2);
+                        }
+                    }
+                }
+                console.log("Grid drawn, size:", grid.size);
+            }
+
+            function updateGrid() {
+                if (!isRunning) return;
+                console.log("Updating grid, current size:", grid.size);
+                const jsGrid = new Map(grid);
+                console.log("Input grid:", jsGrid);
+                try {
+                    const newGrid = nextGeneration(jsGrid);
+                    console.log("Output grid:", newGrid);
+                    grid = new Map(newGrid);
+                    console.log("Grid updated, new size:", grid.size);
+                    iterationCount++;
+                    updateIterationCount();
+                    drawGrid();
+                } catch (error) {
+                    console.error("Error in updateGrid:", error);
+                    isRunning = false;
+                    startStopButton.textContent = "Start";
+                }
+                if (isRunning) {
+                    animationId = setTimeout(() => requestAnimationFrame(updateGrid), 1000 / speed);
+                }
+            }
+
+            function updateIterationCount() {
+                iterationCountElement.textContent = `Iterations: ${iterationCount}`;
+            }
+
+            function stepForward() {
+                const jsGrid = new Map(grid);
+                try {
+                    const newGrid = nextGeneration(jsGrid);
+                    grid = new Map(newGrid);
+                    iterationCount++;
+                    updateIterationCount();
+                    drawGrid();
+                } catch (error) {
+                    console.error("Error in stepForward:", error);
+                }
+            }
+
+            startStopButton.addEventListener('click', () => {
+                isRunning = !isRunning;
+                if (isRunning) {
+                    startStopButton.textContent = "Stop";
+                    updateGrid();
+                } else {
+                    startStopButton.textContent = "Start";
+                    clearTimeout(animationId);
+                }
+            });
+
+            resetButton.addEventListener('click', () => {
+                isRunning = false;
+                startStopButton.textContent = "Start";
+                clearTimeout(animationId);
+                offsetX = 0;
+                offsetY = 0;
+                initGrid();
+            });
+
+            randomButton.addEventListener('click', () => {
+                initGrid();
+            });
+
+            stepButton.addEventListener('click', () => {
+                if (!isRunning) {
+                    stepForward();
+                }
+            });
+
+            canvas.addEventListener('mousedown', (event) => {
+                if (event.button === 0) { // Left mouse button
+                    isSelecting = true;
+                } else if (event.button === 1) { // Middle mouse button
+                    isDragging = true;
+                }
+                lastX = event.clientX;
+                lastY = event.clientY;
+            });
+
+            canvas.addEventListener('mousemove', (event) => {
+                if (isDragging) {
+                    const deltaX = event.clientX - lastX;
+                    const deltaY = event.clientY - lastY;
+                    offsetX += deltaX;
+                    offsetY += deltaY;
+                    lastX = event.clientX;
+                    lastY = event.clientY;
+                    drawGrid();
+                } else if (isSelecting && !isRunning) {
+                    const rect = canvas.getBoundingClientRect();
+                    const x = Math.floor((event.clientX - rect.left - offsetX) / cellSize);
+                    const y = Math.floor((event.clientY - rect.top - offsetY) / cellSize);
+                    const key = `${x},${y}`;
+                    grid.set(key, true);
+                    drawGrid();
+                }
+            });
+
+            canvas.addEventListener('mouseup', (event) => {
+                if (event.button === 0) {
+                    isSelecting = false;
+                } else if (event.button === 1) {
+                    isDragging = false;
+                }
+            });
+
+            canvas.addEventListener('click', (event) => {
+                if (isRunning) return;
+                const rect = canvas.getBoundingClientRect();
+                const x = Math.floor((event.clientX - rect.left - offsetX) / cellSize);
+                const y = Math.floor((event.clientY - rect.top - offsetY) / cellSize);
+                const key = `${x},${y}`;
+                if (grid.has(key)) {
+                    grid.delete(key);
+                } else {
+                    grid.set(key, true);
+                }
+                drawGrid();
+            });
+
+            cellSizeSlider.addEventListener('input', (event) => {
+                cellSize = parseInt(event.target.value);
+                cellSizeValue.textContent = cellSize;
+                drawGrid();
+            });
+
+            speedSlider.addEventListener('input', (event) => {
+                speed = parseInt(event.target.value);
+                speedValue.textContent = `${speed} fps`;
+                if (isRunning) {
+                    clearTimeout(animationId);
+                    updateGrid();
+                }
+            });
+
+            // Update event listeners for mobile support
+            canvas.addEventListener('touchstart', handleTouchStart, false);
+            canvas.addEventListener('touchmove', handleTouchMove, false);
+            canvas.addEventListener('touchend', handleTouchEnd, false);
+
+            function handleTouchStart(event) {
+                event.preventDefault();
+                if (event.touches.length === 1) {
+                    isSelecting = true;
+                } else if (event.touches.length === 2) {
+                    isDragging = true;
+                }
+                lastX = event.touches[0].clientX;
+                lastY = event.touches[0].clientY;
+            }
+
+            function handleTouchMove(event) {
+                event.preventDefault();
+                if (isDragging && event.touches.length === 2) {
+                    const deltaX = event.touches[0].clientX - lastX;
+                    const deltaY = event.touches[0].clientY - lastY;
+                    offsetX += deltaX;
+                    offsetY += deltaY;
+                    lastX = event.touches[0].clientX;
+                    lastY = event.touches[0].clientY;
+                    drawGrid();
+                } else if (isSelecting && !isRunning && event.touches.length === 1) {
+                    const rect = canvas.getBoundingClientRect();
+                    const x = Math.floor((event.touches[0].clientX - rect.left - offsetX) / cellSize);
+                    const y = Math.floor((event.touches[0].clientY - rect.top - offsetY) / cellSize);
+                    const key = `${x},${y}`;
+                    grid.set(key, true);
+                    drawGrid();
+                }
+            }
+
+            function handleTouchEnd(event) {
+                event.preventDefault();
+                isSelecting = false;
+                isDragging = false;
+            }
+
+            initGrid();
+        });
+    </script>
+</body>
+</html>
